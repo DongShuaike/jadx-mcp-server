@@ -265,6 +265,33 @@ The following MCP tools are available:
 
 [READ HERE](https://github.com/zinja-coder/jadx-ai-mcp?tab=readme-ov-file#%EF%B8%8F-getting-started)
 
+### Remote plugin connection (token + tunnel)
+
+When JADX plugin runs in remote mode, pass URL and token to `jadx_mcp_server.py`:
+
+```bash
+uv run jadx_mcp_server.py --jadx-url http://127.0.0.1:8650 --token <ONE_TIME_TOKEN>
+```
+
+You can also load token from file:
+
+```bash
+uv run jadx_mcp_server.py --jadx-url http://127.0.0.1:8650 --token-file /path/to/token.txt
+```
+
+Or via environment variable:
+
+```bash
+export JADX_AUTH_TOKEN=<ONE_TIME_TOKEN>
+uv run jadx_mcp_server.py --jadx-url http://127.0.0.1:8650
+```
+
+For cloud servers without domain names, use SSH tunnel:
+
+```bash
+ssh -N -L 8650:127.0.0.1:8650 user@<cloud-ip>
+```
+
 Demo: **Perform Code Review to Find Vulnerabilities locally**
 
 https://github.com/user-attachments/assets/4cd26715-b5e6-4b4b-95e4-054de6789f42

@@ -10,6 +10,7 @@ See the file 'LICENSE' for copying permission
 """
 
 import argparse
+import os
 import sys
 from fastmcp import FastMCP
 from src.banner import jadx_mcp_server_banner
@@ -290,10 +291,41 @@ def main():
         default=8650,
         type=int,
     )
+    parser.add_argument(
+        "--jadx-url",
+        help="Full JADX AI MCP Plugin base URL (example: http://127.0.0.1:8650)",
+        default="",
+        type=str,
+    )
+    parser.add_argument(
+        "--token",
+        help="One-time bearer token emitted by JADX AI MCP Plugin remote mode",
+        default="",
+        type=str,
+    )
+    parser.add_argument(
+        "--token-file",
+        help="Read one-time token from file path",
+        default="",
+        type=str,
+    )
     args = parser.parse_args()
 
     # Configure
-    config.set_jadx_port(args.jadx_port)
+    if args.jadx_url:
+        config.set_jadx_url(args.jadx_url)
+    else:
+        config.set_jadx_port(args.jadx_port)
+
+    token = (args.token or "").strip()
+    if not token and args.token_file:
+        token_file = args.token_file.strip()
+        with open(token_file, "r", encoding="utf-8") as f:
+            token = f.read().strip()
+    if not token:
+        token = os.getenv("JADX_AUTH_TOKEN", "").strip()
+    if token:
+        config.set_auth_token(token)
 
     # Banner & Health Check
     try:
@@ -302,8 +334,8 @@ def main():
         print(
             "[JADX AI MCP Server] v3.3.5 | MCP Port:",
             args.port,
-            "| JADX Port:",
-            args.jadx_port,
+            "| JADX URL:",
+            config.get_jadx_url(),
         )
 
     print("Testing JADX AI MCP Plugin connectivity...")
