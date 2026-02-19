@@ -1,3 +1,87 @@
+## Workflow-First Quick Start (Client Side)
+
+If your real setup is:
+
+1. Claude Code Agent (client) -> connects local `jadx-mcp-server`
+2. Cloud host -> installs and runs `jadx-ai-mcp` plugin in `jadx-gui`
+3. Local `jadx-mcp-server` -> connects to cloud plugin with token
+4. Claude Code -> calls tools from local MCP
+
+start here first.
+
+### Role of this repository
+
+This repository is the **local MCP bridge** between Claude Code and cloud JADX plugin.
+
+### Architecture
+
+```mermaid
+flowchart LR
+  A["Claude Code Agent (Client)"] -->|MCP| B["Local jadx-mcp-server"]
+  B -->|HTTP + Bearer Token| C["Cloud jadx-ai-mcp plugin"]
+  C --> D["jadx-gui + APK"]
+```
+
+### Step A: Prepare cloud plugin (once per session)
+
+On cloud host:
+
+```bash
+jadx plugins --install "github:zinja-coder:jadx-ai-mcp"
+export JADX_AI_MCP_HOST=127.0.0.1
+export JADX_AI_MCP_PORT=8650
+export JADX_AI_MCP_REMOTE_MODE=true
+jadx-gui /path/to/app.apk
+```
+
+Read one-time token from cloud logs.
+
+### Step B: Start local MCP server
+
+```bash
+cd /path/to/jadx-mcp-server
+uv run jadx_mcp_server.py --jadx-url http://127.0.0.1:8650 --token <ONE_TIME_TOKEN>
+```
+
+Alternative token input:
+
+```bash
+export JADX_AUTH_TOKEN=<ONE_TIME_TOKEN>
+uv run jadx_mcp_server.py --jadx-url http://127.0.0.1:8650
+```
+
+If cloud only has IP and no fixed domain, prefer SSH tunnel:
+
+```bash
+ssh -N -L 8650:127.0.0.1:8650 user@<cloud-ip>
+```
+
+Then keep local URL as `http://127.0.0.1:8650`.
+
+### Step C: Claude Code MCP config example
+
+```json
+{
+  "mcpServers": {
+    "jadx-mcp-server": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/path/to/jadx-mcp-server",
+        "run",
+        "jadx_mcp_server.py",
+        "--jadx-url",
+        "http://127.0.0.1:8650",
+        "--token",
+        "<ONE_TIME_TOKEN>"
+      ]
+    }
+  }
+}
+```
+
+---
+
 <div align="center">
 
 # JADX-MCP-SERVER (Part of Zin's Reverse Engineering MCP Suite)
