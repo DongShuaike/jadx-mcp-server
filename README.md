@@ -31,10 +31,23 @@ jadx plugins --install "github:zinja-coder:jadx-ai-mcp"
 export JADX_AI_MCP_HOST=127.0.0.1
 export JADX_AI_MCP_PORT=8650
 export JADX_AI_MCP_REMOTE_MODE=true
+# Option A (desktop session)
 jadx-gui /path/to/app.apk
+
+# Option B (pure CLI headless service, no desktop required)
+java -cp "<path-to-jadx>/lib/jadx-dev-all.jar:/path/to/jadx-ai-mcp.jar" \
+  com.zin.jadxaimcp.cli.HeadlessServerLauncher \
+  --port 8650 \
+  --remote-mode true \
+  /path/to/app.apk
 ```
 
 Read one-time token from cloud logs.
+
+Notes:
+
+- Standard `jadx`/`jadx-cli` entrypoint exits after processing, so it is not suitable for a long-running MCP backend.
+- Use `jadx-gui` (with desktop/Xvfb) or `HeadlessServerLauncher` for persistent service mode.
 
 ### Step B: Start local MCP server
 
