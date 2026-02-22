@@ -1,93 +1,121 @@
-## Workflow-First Quick Start (Client Side)
+# JADX MCP Server（客户端侧）
 
-If your real setup is:
+本 README 只覆盖 **客户端本地桥接服务**（如何连接云端插件、如何接入 Claude Code）。
 
-1. Claude Code Agent (client) -> connects local `jadx-mcp-server`
-2. Cloud host -> installs and runs `jadx-ai-mcp` plugin in `jadx-gui`
-3. Local `jadx-mcp-server` -> connects to cloud plugin with token
-4. Claude Code -> calls tools from local MCP
+端到端流程请先看：
+- `<workspace-root>/README.md`
 
-start here first.
+云端插件侧请看：
+- `<workspace-root>/jadx-ai-mcp/README.md`
 
-### Role of this repository
+## 1. 作用与边界
 
-This repository is the **local MCP bridge** between Claude Code and cloud JADX plugin.
+这个项目负责：
 
-### Architecture
+- 把云端 `jadx-ai-mcp` HTTP 能力桥接成 MCP tools
+- 处理 token 鉴权 header
+- 给 Claude Code 提供 stdio MCP server
 
-```mermaid
-flowchart LR
-  A["Claude Code Agent (Client)"] -->|MCP| B["Local jadx-mcp-server"]
-  B -->|HTTP + Bearer Token| C["Cloud jadx-ai-mcp plugin"]
-  C --> D["jadx-gui + APK"]
-```
+这个项目不负责：
 
-### Step A: Prepare cloud plugin (once per session)
+- 云端 JADX 进程与插件生命周期
+- 云端端口开放策略
 
-On cloud host:
+---
 
-```bash
-jadx plugins --install "github:zinja-coder:jadx-ai-mcp"
-export JADX_AI_MCP_HOST=127.0.0.1
-export JADX_AI_MCP_PORT=8650
-export JADX_AI_MCP_REMOTE_MODE=true
-# Option A (desktop session)
-jadx-gui /path/to/app.apk
+## 2. 启动前准备
 
-# Option B (pure CLI headless service, no desktop required)
-java -cp "<path-to-jadx>/lib/jadx-dev-all.jar:/path/to/jadx-ai-mcp.jar" \
-  com.zin.jadxaimcp.cli.HeadlessServerLauncher \
-  --port 8650 \
-  --remote-mode true \
-  /path/to/app.apk
-```
+### 2.1 本地依赖
 
-Read one-time token from cloud logs.
+- Python 3.10+
+- `uv`
 
-Notes:
+### 2.2 云端前置
 
-- Standard `jadx`/`jadx-cli` entrypoint exits after processing, so it is not suitable for a long-running MCP backend.
-- Use `jadx-gui` (with desktop/Xvfb) or `HeadlessServerLauncher` for persistent service mode.
+你需要先拿到：
 
-### Step B: Start local MCP server
+- 云端插件 URL（通常经隧道后为 `http://127.0.0.1:<local-port>`）
+- 一次性 token
+
+---
+
+## 3. 启动本地 MCP Server
+
+### 3.1 推荐：token-file 方式
 
 ```bash
-cd /path/to/jadx-mcp-server
-uv run jadx_mcp_server.py --jadx-url http://127.0.0.1:8650 --token <ONE_TIME_TOKEN>
+mkdir -p ~/.secrets && chmod 700 ~/.secrets
+printf '%s\n' '<ONE_TIME_TOKEN>' > ~/.secrets/jadx_cloud.token
+chmod 600 ~/.secrets/jadx_cloud.token
+
+cd <workspace-root>/jadx-mcp-server
+uv run jadx_mcp_server.py \
+  --jadx-url http://127.0.0.1:18650 \
+  --token-file ~/.secrets/jadx_cloud.token
 ```
 
-Alternative token input:
+### 3.2 可选：命令行 token
+
+```bash
+uv run jadx_mcp_server.py --jadx-url http://127.0.0.1:18650 --token <ONE_TIME_TOKEN>
+```
+
+### 3.3 可选：环境变量 token
 
 ```bash
 export JADX_AUTH_TOKEN=<ONE_TIME_TOKEN>
-uv run jadx_mcp_server.py --jadx-url http://127.0.0.1:8650
+uv run jadx_mcp_server.py --jadx-url http://127.0.0.1:18650
 ```
 
-If cloud only has IP and no fixed domain, prefer SSH tunnel:
+---
+
+## 4. 隧道建议（避免和本地冲突）
+
+推荐把云端映射到 `18650`，不要复用本地 `8650`：
 
 ```bash
-ssh -N -L 8650:127.0.0.1:8650 user@<cloud-ip>
+ssh -f -N -L 18650:127.0.0.1:8650 user@<cloud-ip>
 ```
 
-Then keep local URL as `http://127.0.0.1:8650`.
+说明：
 
-### Step C: Claude Code MCP config example
+- `ssh -N -L ...` 前台看起来“卡住”是正常的
+- 使用 `-f` 可后台运行
+
+检查隧道是否在监听：
+
+```bash
+lsof -nP -iTCP:18650 -sTCP:LISTEN
+```
+
+---
+
+## 5. Claude Code MCP 配置（避免冲突）
+
+推荐同时保留两个 server 名称：
+
+- `jadx-local`（你本地 APK 分析）
+- `jadx-cloud`（云端 APK 分析）
+
+示例：
 
 ```json
 {
   "mcpServers": {
-    "jadx-mcp-server": {
+    "jadx-cloud": {
+      "type": "stdio",
       "command": "uv",
       "args": [
         "--directory",
-        "/path/to/jadx-mcp-server",
+        "<workspace-root>/jadx-mcp-server",
         "run",
         "jadx_mcp_server.py",
         "--jadx-url",
-        "http://127.0.0.1:8650",
-        "--token",
-        "<ONE_TIME_TOKEN>"
-      ]
+        "http://127.0.0.1:18650",
+        "--token-file",
+        "~/.secrets/jadx_cloud.token"
+      ],
+      "env": {}
     }
   }
 }
@@ -95,387 +123,81 @@ Then keep local URL as `http://127.0.0.1:8650`.
 
 ---
 
-<div align="center">
+## 6. 关键坑：`/mcp` 显示 No MCP servers configured
 
-# JADX-MCP-SERVER (Part of Zin's Reverse Engineering MCP Suite)
+这个问题在本次排障中已复现，根因通常是 **scope 不一致**。
 
-⚡ Fully automated MCP server built to communicate with JADX-AI-MCP Plugin to analyze Android APKs using LLMs like Claude — uncover vulnerabilities, parse manifests, and reverse engineer effortlessly.
+### 6.1 在当前项目目录注册 local scope（最稳）
 
-![GitHub contributors JADX-AI-MCP](https://img.shields.io/github/contributors/zinja-coder/jadx-ai-mcp)
-![GitHub contributors JADX-MCP-SERVER](https://img.shields.io/github/contributors/zinja-coder/jadx-mcp-server)
-![GitHub all releases](https://img.shields.io/github/downloads/zinja-coder/jadx-ai-mcp/total)
-![GitHub release (latest by SemVer)](https://img.shields.io/github/downloads/zinja-coder/jadx-ai-mcp/latest/total)
-![Latest release](https://img.shields.io/github/release/zinja-coder/jadx-ai-mcp.svg)
-![Java 11+](https://img.shields.io/badge/Java-11%2B-blue)
-![Python 3.10+](https://img.shields.io/badge/python-3%2E10%2B-blue)
-[![License](http://img.shields.io/:license-apache-blue.svg)](http://www.apache.org/licenses/LICENSE-2.0.html)
-
-#### ⭐ Contributors
-
-Thanks to these wonderful people for their contributions ⭐
-<table>
-  <tr align="center">
-    <td>
-      <a href="https://github.com/badmonkey7">
-        <img src="https://avatars.githubusercontent.com/u/41368882?v=4" width="30px;" alt=""/>
-        <br /><sub><b>badmonkey7</b></sub>
-      </a>
-    </td>
-       <td>
-      <a href="https://github.com/tiann">
-        <img src="https://avatars.githubusercontent.com/u/4233744?v=4" width="30px;" alt=""/>
-        <br /><sub><b>tainn</b></sub>
-      </a>
-    </td>
-    <td>
-      <a href="https://github.com/ljt270864457">
-        <img src="https://avatars.githubusercontent.com/u/8609890?v=4" width="30px;" alt=""/>
-        <br /><sub><b>ljt270864457</b></sub>
-      </a>
-    </td>
-    <td>
-      <a href="https://github.com/ZERO-A-ONE">
-        <img src="https://avatars.githubusercontent.com/u/18625356?v=4" width="30px;" alt=""/>
-        <br /><sub><b>ZERO-A-ONE</b></sub>
-      </a>
-    </td>
-    <td>
-      <a href="https://github.com/neoz">
-        <img src="https://avatars.githubusercontent.com/u/360582?v=4" width="30px;" alt=""/>
-        <br /><sub><b>neoz</b></sub>
-      </a>
-    </td>
-    <td>
-      <a href="https://github.com/SamadiPour">
-        <img src="https://avatars.githubusercontent.com/u/24422125?v=4" width="30px;" alt=""/>
-        <br /><sub><b>SamadiPour</b></sub>
-      </a>
-    </td>
-    <td>
-      <a href="https://github.com/wuseluosi">
-        <img src="https://avatars.githubusercontent.com/u/192840340?v=4" width="30px;" alt=""/>
-        <br /><sub><b>wuseluosi</b></sub>
-      </a>
-    </td>
-    <td>
-      <a href="https://github.com/CainYzb">
-        <img src="https://avatars.githubusercontent.com/u/50669073?v=4" width="30px;" alt=""/>
-        <br /><sub><b>CainYzb</b></sub>
-      </a>
-    </td>
-    <td>
-      <a href="https://github.com/tbodt">
-        <img src="https://avatars.githubusercontent.com/u/5678977?v=4" width="30px;" alt=""/>
-        <br /><sub><b>tbodt</b></sub>
-      </a>
-    </td>
-    <td>
-      <a href="https://github.com/LilNick0101">
-        <img src="https://avatars.githubusercontent.com/u/100995805?v=4" width="30px;" alt=""/>
-        <br /><sub><b>LikNick0101</b></sub>
-      </a>
-    </td>
-    <td>
-      <a href="https://github.com/lwsinclair">
-        <img src="https://avatars.githubusercontent.com/u/2829939?v=4" width="30px;" alt=""/>
-        <br /><sub><b>lwsinclair</b></sub>
-      </a>
-    </td>
-  </tr>
-</table>
-
-</div>
-<!-- Still in early stage of development — expect bugs, crashes, and logical errors.-->
-
-<!-- MCP (Model Context Protocol) server that connects to a custom plugin of [JADX](https://github.com/skylot/jadx) called [JADX-AI-MCP](https://github.com/zinja-coder/jadx-ai-mcp) and provides reverse engineering capabilities directly to local LLMs like Claude Desktop.-->
-
-<div align="center">
-    <img alt="banner" height="480px" widht="620px" src="static/image.png">
-</div>
-
-#### ReadTheDocs:
- - We are now live at Read The Docs: 
-
---- 
-
-#### Download now: https://github.com/zinja-coder/jadx-ai-mcp/releases
-
----
-
-## 🤖 What is JADX-MCP-SERVER?
-
-**JADX MCP Server** is a standalone Python server that interacts with a modified version of `jadx-gui` (see: [jadx-ai-mcp](https://github.com/zinja-coder/jadx-ai-mcp)) via MCP (Model Context Protocol). It lets LLMs communicate with the decompiled Android app context live.
-
-
-## 🤖 What is JADX-AI-MCP?
-
-**JADX-AI-MCP** is a plugin for the [JADX decompiler](https://github.com/skylot/jadx) that integrates directly with [Model Context Protocol (MCP)](https://github.com/anthropic/mcp) to provide **live reverse engineering support with LLMs like Claude**.
-
-Think: "Decompile → Context-Aware Code Review → AI Recommendations" — all in real time.
-
-#### High Level Sequence Diagram 
-
-```mermaid
-sequenceDiagram
-LLM CLIENT->>JADX MCP SERVER: INVOKE MCP TOOL
-JADX MCP SERVER->>JADX AI MCP PLUGIN: INVOKE HTTP REQUEST
-JADX AI MCP PLUGIN->>REQUEST HANDLERS: INVOKE HTTP REQUEST HANDLER
-REQUEST HANDLERS->>JADX GUI: PERFORM ACTION/GATHER DATA
-JADX GUI->>REQUEST HANDLERS: ACTION PERFORMED/DATA GATHERED
-REQUEST HANDLERS->>JADX AI MCP PLUGIN: CRAFT HTTP RESPONSE
-JADX AI MCP PLUGIN->>JADX MCP SERVER:HTTP RESPONSE
-JADX MCP SERVER->>LLM CLIENT: MCP TOOL RESULT
-```
-
-Watch the demos!
-
-- **Perform quick analysis**
-  
-https://github.com/user-attachments/assets/b65c3041-fde3-4803-8d99-45ca77dbe30a
-
-- **Quickly find vulnerabilities**
-
-https://github.com/user-attachments/assets/c184afae-3713-4bc0-a1d0-546c1f4eb57f
-
-- **Multiple AI Agents Support**
-
-https://github.com/user-attachments/assets/6342ea0f-fa8f-44e6-9b3a-4ceb8919a5b0
-
-- **Analyze The APK Resources**
-
-https://github.com/user-attachments/assets/f42d8072-0e3e-4f03-93ea-121af4e66eb1
-
-- **Your AI Assistant during debugging of APK using JADX**
-
-https://github.com/user-attachments/assets/2b0bd9b1-95c1-4f32-9b0c-38b864dd6aec
-
-It is combination of two tools:
-1. [JADX-AI-MCP](https://github.com/zinja-coder/jadx-ai-mcp)
-2. JADX MCP SERVER
-
----
-
-# Zin MCP Suite
- - **[APKTool-MCP-Server](https://github.com/zinja-coder/apktool-mcp-server)**
- - **[JAD-AI-MCP-Plugin](https://github.com/zinja-coder/jadx-ai-mcp)**
- - **[ZIN-MCP-Client](https://github.com/zinja-coder/zin-mcp-client)**
-
-## Current MCP Tools
-
-The following MCP tools are available:
-
-- `fetch_current_class()` — Get the class name and full source of selected class
-- `get_selected_text()` — Get currently selected text
-- `get_all_classes()` — List all classes in the project
-- `get_class_source()` — Get full source of a given class
-- `get_method_by_name()` — Fetch a method’s source
-- `search_method_by_name()` — Search method across classes
-- `search_classes_by_keyword()` — Search for classes whose source code contains a specific keyword (supports pagination)
-- `get_methods_of_class()` — List methods in a class
-- `get_fields_of_class()` — List fields in a class
-- `get_smali_of_class()` — Fetch smali of class
-- `get_main_activity_class()` — Fetch main activity from jadx mentioned in AndroidManifest.xml file. 
-- `get_main_application_classes_code()` — Fetch all the main application classes' code based on the package name defined in the AndroidManifest.xml.
-- `get_main_application_classes_names()` — Fetch all the main application classes' names based on the package name defined in the AndroidManifest.xml.
-- `get_android_manifest()` — Retrieve and return the AndroidManifest.xml content.
-- `get_strings()` : Fetches the strings.xml file
-- `get_all_resource_file_names()` : Retrieve all resource files names that exists in application
-- `get_resource_file()` : Retrieve resource file content
-- `rename_variable()` : Renames the variable within a method
-- `debug_get_stack_frames()` : Get the stack frames from jadx debugger
-- `debug_get_threads()` : Get the insights of threads from jadx debugger
-- `debug_get_variables()` : Get the variables from jadx debugger
-- `xrefs_to_class()` : Find all references to a class (returns method-level and class-level references, supports pagination)
-- `xrefs_to_method()` : Find all references to a method (includes override-related methods, supports pagination)
-- `xrefs_to_field()` : Find all references to a field (returns methods that access the field, supports pagination)
----
-
-#### Note: Tested on Claude Desktop. Support for other LLMs might be tested in future.
-
-## 🗒️ Sample Prompts
-
-🔍 Basic Code Understanding
-
-    "Explain what this class does in one paragraph."
-
-    "Summarize the responsibilities of this method."
-
-    "Is there any obfuscation in this class?"
-
-    "List all Android permissions this class might require."
-
-🛡️ Vulnerability Detection
-
-    "Are there any insecure API usages in this method?"
-
-    "Check this class for hardcoded secrets or credentials."
-
-    "Does this method sanitize user input before using it?"
-
-    "What security vulnerabilities might be introduced by this code?"
-
-🛠️ Reverse Engineering Helpers
-
-    "Deobfuscate and rename the classes and methods to something readable."
-
-    "Can you infer the original purpose of this smali method?"
-
-    "What libraries or SDKs does this class appear to be part of?"
-
-📦 Static Analysis
-
-    "List all network-related API calls in this class."
-
-    "Identify file I/O operations and their potential risks."
-
-    "Does this method leak device info or PII?"
-
-🤖 AI Code Modification
-
-    "Refactor this method to improve readability."
-
-    "Add comments to this code explaining each step."
-
-    "Rewrite this Java method in Python for analysis."
-
-📄 Documentation & Metadata
-
-    "Generate Javadoc-style comments for all methods."
-
-    "What package or app component does this class likely belong to?"
-
-    "Can you identify the Android component type (Activity, Service, etc.)?"
-
-🐞 Debugger Assistant
-```
-   "Fetch stack frames, varirables and threads from debugger and provide summary"
-
-   "Based the stack frames from debugger, explain the execution flow of the application"
-
-   "Based on the state of variables, is there security threat?"
-```
-
-
----
-
-## 🛠️ Getting Started
-
-[READ HERE](https://github.com/zinja-coder/jadx-ai-mcp?tab=readme-ov-file#%EF%B8%8F-getting-started)
-
-### Remote plugin connection (token + tunnel)
-
-When JADX plugin runs in remote mode, pass URL and token to `jadx_mcp_server.py`:
+进入你正在工作的目录后执行：
 
 ```bash
-uv run jadx_mcp_server.py --jadx-url http://127.0.0.1:8650 --token <ONE_TIME_TOKEN>
+claude mcp add -s local jadx-cloud -- \
+  uv --directory <workspace-root>/jadx-mcp-server \
+  run jadx_mcp_server.py \
+  --jadx-url http://127.0.0.1:18650 \
+  --token-file ~/.secrets/jadx_cloud.token
 ```
 
-You can also load token from file:
+验证：
 
 ```bash
-uv run jadx_mcp_server.py --jadx-url http://127.0.0.1:8650 --token-file /path/to/token.txt
+claude mcp list
+claude mcp get jadx-cloud
 ```
 
-Or via environment variable:
+### 6.2 删除旧配置（推荐）
 
 ```bash
-export JADX_AUTH_TOKEN=<ONE_TIME_TOKEN>
-uv run jadx_mcp_server.py --jadx-url http://127.0.0.1:8650
+claude mcp remove -s local jadx-mcp
 ```
 
-For cloud servers without domain names, use SSH tunnel:
+说明：仅设置 `disabled=true` 有时不能达到你预期，直接移除最干净。
 
-```bash
-ssh -N -L 8650:127.0.0.1:8650 user@<cloud-ip>
-```
+### 6.3 如果你改了 server 名称
 
-Demo: **Perform Code Review to Find Vulnerabilities locally**
+比如从 `jadx-mcp` 改到 `jadx-cloud`，记得同步更新项目白名单：
 
-https://github.com/user-attachments/assets/4cd26715-b5e6-4b4b-95e4-054de6789f42
+- 文件：`<project>/.claude/settings.local.json`
+- 把 `mcp__jadx-mcp__*` 改为 `mcp__jadx-cloud__*`
 
-## 🛣️ Future Roadmap
-
-- [x] Add Support for apktool
-
- - [ ] Add support for hermes code (ReactNative Application)
-
- - [ ] Add docker support
-
- - [x] Add more useful MCP Tools
-
- - [x] Make LLM be able to modify code on JADX
-
- - [x] Add prompts templates, give llm access to Android APK Files as Resources
-
- - [ ] ~~Build MCP Client to support Local LLM~~
-
- - [ ] **END-GOAL** : Make all android reverse engineering and APK modification tools Connect with single MCP server to make reverse engineering apk files as easy as possible purely from vibes.
-
-## NOTE For Contributors
-
- - The files related to JADX-AI-MCP can be found [here](https://github.com/zinja-coder/jadx-ai-mcp)
-
- - The files related to **jadx-mcp-server** can be found in this repository only.
-
-## 🙏 Credits
-
-This project is a plugin for JADX, an amazing open-source Android decompiler created and maintained by [@skylot](https://github.com/skylot). All core decompilation logic belongs to them. I have only extended it to support my MCP server with AI capabilities.
-
-[📎 Original README (JADX)](https://github.com/skylot/jadx)
-
-The original README.md from jadx is included here in this repository for reference and credit.
-
-This MCP server is made possible by the extensibility of JADX-GUI and the amazing Android reverse engineering community.
-
-Also huge thanks to [@aaddrick](https://github.com/aaddrick) for developing Claude desktop for Debian based linux.
-
-And in last thanks to [@anthropics](https://github.com/anthropics) for developing the Model Context Protocol and [@FastMCP](https://github.com/modelcontextprotocol/python-sdk) team
-
-And all open source maintainers and contributors that makes libraries and dependencies which allows project like this possible.
-
-## Audited and Received Assessment Badge
-
-[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/zinja-coder-jadx-mcp-server-badge.png)](https://mseep.ai/app/zinja-coder-jadx-mcp-server)
-
-Thank you Mseep.net for auditing and providing Assessment Badge.
-
-### Dependencies
-
-This project uses following awesome libraries.
-
-- Plugin - Java
-  - Javalin     - https://javalin.io/ - Apache 2.0 License
-  - SLF4J       - https://slf4j.org/  - MIT License
-  - org.w3c.dom - https://mvnrepository.com/artifact/org.w3c.dom - W3C Software and Document License
-
-- MCP Server - Python
-  - FastMCP - https://github.com/jlowin/fastmcp - Apache 2.0 License
-  - httpx   - https://www.python-httpx.org      - BSD-3-Clause (“BSD licensed”) 
-
-## 📄 License
-
-This plugin inherits the Apache 2.0 License from the original JADX repository.
-
-## ⚖️ Legal Warning
-
-**Disclaimer**
-
-The tools `jadx-ai-mcp` and `jadx_mcp_server` are intended strictly for educational, research, and ethical security assessment purposes. They are provided "as-is" without any warranties, expressed or implied. Users are solely responsible for ensuring that their use of these tools complies with all applicable laws, regulations, and ethical guidelines.
-
-By using `jadx-ai-mcp` or `jadx_mcp_server`, you agree to use them only in environments you are authorized to test, such as applications you own or have explicit permission to analyze. Any misuse of these tools for unauthorized reverse engineering, infringement of intellectual property rights, or malicious activity is strictly prohibited.
-
-The developers of `jadx-ai-mcp` and `jadx_mcp_server` shall not be held liable for any damage, data loss, legal consequences, or other consequences resulting from the use or misuse of these tools. Users assume full responsibility for their actions and any impact caused by their usage.
-
-Use responsibly. Respect intellectual property. Follow ethical hacking practices.
+否则工具调用会被权限策略拦截。
 
 ---
 
-## 🙌 Contribute or Support
+## 7. 常见问题
 
-- Found it useful? Give it a ⭐️
-- Got ideas? Open an [issue](https://github.com/zinja-coder/jadx-mcp-server/issues) or submit a PR
-- Built something on top? DM me or mention me — I’ll add it to the README!
+### Q1. 启动日志里 health check 401
+
+remote mode 必须带 token；未带 token 是预期失败。
+
+### Q2. 明明配置了还是连接不上
+
+按顺序检查：
+
+1. `claude mcp list` 在当前目录是否能看到 `jadx-cloud`
+2. `lsof` 看本地隧道端口是否监听
+3. token 文件是否存在、是否最新
+4. 云端插件是否仍在运行
+
+### Q3. 怎样区分本地与云端 MCP
+
+用不同 server 名称 + 不同本地端口：
+
+- `jadx-local` -> `127.0.0.1:8650`
+- `jadx-cloud` -> `127.0.0.1:18650`
 
 ---
 
-Built with ❤️ for the reverse engineering and AI communities.
+## 8. 快速自检命令
+
+```bash
+# 1) MCP 配置是否生效
+claude mcp list
+
+# 2) 服务详情
+claude mcp get jadx-cloud
+
+# 3) 直接跑桥接服务
+uv run jadx_mcp_server.py --jadx-url http://127.0.0.1:18650 --token-file ~/.secrets/jadx_cloud.token
+```
